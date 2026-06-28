@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="en-us">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+  <meta name="viewport" content="width=device-width, height=device-height, initial-scale=1.0, user-scalable=no, shrink-to-fit=yes">
+  <title>Worldcup Goal Master</title>
+  <link rel="shortcut icon" href="TemplateData/favicon.ico">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      width: 100%; height: 100%;
+      overflow: hidden;
+      background: #040e2d;
+      font-family: 'Li Abu J M Akkas Unicode', system-ui, -apple-system, 'Segoe UI', sans-serif;
+    }
+
+    #unity-container {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #040e2d;
+    }
+
+    /* Canvas fills the container; the drawing buffer is sized in JS (fitCanvas)
+       so the game never renders at the 300x150 default and stays crisp on resize. */
+    #unity-canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      background: #040e2d;
+      outline: none;
+    }
+
+    /* ── Loading overlay ──
+       absolute (not fixed) inside #unity-container, which is itself
+       position:fixed inset:0 = the iframe viewport. This fills + re-centers
+       reliably on resize, avoiding the fixed-in-sandboxed-iframe drift. */
+    #unity-loading-bar {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 20;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1rem;
+      opacity: 1;
+      transition: opacity 260ms ease;
+      background:
+        radial-gradient(circle at 50% 38%, rgba(255,255,255,0.06), transparent 34%),
+        radial-gradient(circle at 18% 18%, rgba(37,230,255,0.16), transparent 30%),
+        radial-gradient(circle at 82% 82%, rgba(124,54,255,0.18), transparent 30%),
+        #040e2d;
+    }
+
+    .loader-card {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 16px;
+      width: min(360px, 88vw);
+      padding: 30px 26px;
+      text-align: center;
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 24px;
+      background: rgba(6,12,30,0.74);
+      box-shadow: 0 24px 70px rgba(0,0,0,0.58), inset 0 1px 0 rgba(255,255,255,0.10);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+    }
+
+    .loader-eyebrow {
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: #caff00;
+    }
+
+    /* Progress ring.
+       --deg is registered as an <angle> so it INTERPOLATES: the ring fill then
+       animates in lockstep with the bar (same 200ms) instead of jumping
+       instantly while the bar lags — which previously showed e.g. ring 100%
+       next to a half-filled bar on fast loads. */
+    @property --deg {
+      syntax: "<angle>";
+      inherits: false;
+      initial-value: 0deg;
+    }
+    .ring {
+      position: relative;
+      width: 104px; height: 104px;
+      display: grid;
+      place-items: center;
+      border-radius: 50%;
+      background: conic-gradient(
+        from -90deg,
+        #25e6ff 0deg,
+        #caff00 var(--deg, 0deg),
+        rgba(255,255,255,0.12) var(--deg, 0deg),
+        rgba(255,255,255,0.12) 360deg
+      );
+      box-shadow: 0 0 34px rgba(37,230,255,0.24), 0 0 70px rgba(124,54,255,0.14);
+      transition: --deg 200ms ease;
+    }
+    .ring::before {
+      content: "";
+      position: absolute;
+      inset: 9px;
+      border-radius: inherit;
+      background: #050a1c;
+      box-shadow: inset 0 0 18px rgba(255,255,255,0.05);
+    }
+    .ring::after {
+      content: "";
+      position: absolute;
+      inset: -7px;
+      border-radius: inherit;
+      border: 1px solid rgba(37,230,255,0.26);
+      animation: ringPulse 1.5s ease-in-out infinite;
+    }
+    @keyframes ringPulse {
+      0%, 100% { transform: scale(1);    opacity: 0.5; }
+      50%      { transform: scale(1.07); opacity: 0.12; }
+    }
+    /* Spin the ring during the post-download "preparing" phase so 100% never looks frozen. */
+    .loader-card.preparing .ring { animation: ringSpin 1.1s linear infinite; }
+    @keyframes ringSpin { to { transform: rotate(360deg); } }
+
+    .ring-pct {
+      position: relative;
+      z-index: 1;
+      font-family: Arial, system-ui, sans-serif;
+      font-size: 22px;
+      font-weight: 900;
+      color: #fff;
+      letter-spacing: -0.5px;
+    }
+    .loader-card.preparing .ring-pct { font-size: 16px; }
+
+    .loader-title {
+      font-size: 18px;
+      font-weight: 800;
+      color: #fff;
+      line-height: 1.5;
+    }
+    .loader-sub {
+      margin-top: -6px;
+      font-size: 13.5px;
+      font-weight: 500;
+      color: rgba(231,238,252,0.78);
+      line-height: 1.55;
+      min-height: 1.2em;
+    }
+    .loader-sub b { color: #caff00; font-weight: 800; }
+
+    /* Progress bar */
+    .bar-track {
+      position: relative;
+      width: 100%;
+      height: 9px;
+      border-radius: 999px;
+      overflow: hidden;
+      background: rgba(255,255,255,0.12);
+    }
+    .bar-fill {
+      width: 0%;
+      height: 100%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, #25e6ff, #caff00);
+      box-shadow: 0 0 18px rgba(37,230,255,0.36);
+      transition: width 200ms ease;
+    }
+    /* Indeterminate shimmer sweep during the preparing phase. */
+    .bar-track::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      transform: translateX(-100%);
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,0.55), transparent);
+      opacity: 0;
+    }
+    .loader-card.preparing .bar-track::after {
+      opacity: 1;
+      animation: shimmer 1.15s ease-in-out infinite;
+    }
+    @keyframes shimmer {
+      0%   { transform: translateX(-100%); }
+      100% { transform: translateX(100%); }
+    }
+
+    /* Warning banner */
+    #unity-warning {
+      position: fixed;
+      top: 12px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 30;
+      display: none;
+      max-width: 90vw;
+      font-family: Arial, sans-serif;
+      font-size: 14px;
+      text-align: center;
+    }
+    #unity-warning div {
+      margin-bottom: 6px;
+      border-radius: 8px;
+      color: #000;
+      padding: 10px 14px;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .ring::after, .loader-card.preparing .ring, .loader-card.preparing .bar-track::after {
+        animation: none !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div id="unity-container">
+    <canvas id="unity-canvas" tabindex="-1"></canvas>
+
+    <div id="unity-loading-bar">
+      <div class="loader-card" id="loader-card">
+        <span class="loader-eyebrow">Worldcup Goal Master 2026</span>
+        <div class="ring" id="ring">
+          <span class="ring-pct" id="ring-pct">0%</span>
+        </div>
+        <div class="loader-title" id="loader-title">গেম লোড হচ্ছে…</div>
+        <div class="loader-sub" id="loader-sub">অনুগ্রহ করে একটু অপেক্ষা করো</div>
+        <div class="bar-track">
+          <div class="bar-fill" id="bar-fill"></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="unity-warning"></div>
+  </div>
+
+  <script>
+    var canvas     = document.getElementById("unity-canvas");
+    var loadingBar = document.getElementById("unity-loading-bar");
+    var loaderCard = document.getElementById("loader-card");
+    var ring       = document.getElementById("ring");
+    var ringPct    = document.getElementById("ring-pct");
+    var loaderSub  = document.getElementById("loader-sub");
+    var barFill    = document.getElementById("bar-fill");
+
+    /* If @property isn't supported the ring's --deg can't interpolate, so it
+       would jump while the bar still animates → desync. Snap the bar to match
+       the instant ring on those browsers so they always show the same value. */
+    if (!(window.CSS && typeof CSS.registerProperty === "function")) {
+      barFill.style.transition = "none";
+    }
+
+    /* ── Canvas sizing ──────────────────────────────────────────────────
+       Set BOTH the CSS size (fill the iframe/window) AND the drawing buffer
+       (clientSize × devicePixelRatio). With matchWebGLToCanvasSize:false the
+       game renders at exactly this buffer, so it's never the 300×150 default
+       and never distorts on resize. A ResizeObserver catches iframe size
+       changes that don't fire a window 'resize'. */
+    var DPR = Math.min(window.devicePixelRatio || 1, 2);
+    function fitCanvas() {
+      var w = window.innerWidth, h = window.innerHeight;
+      canvas.style.width  = w + "px";
+      canvas.style.height = h + "px";
+      var bw = Math.max(1, Math.round(w * DPR));
+      var bh = Math.max(1, Math.round(h * DPR));
+      if (canvas.width !== bw)  canvas.width  = bw;
+      if (canvas.height !== bh) canvas.height = bh;
+    }
+    window.addEventListener("resize", fitCanvas);
+    window.addEventListener("orientationchange", fitCanvas);
+    if (window.ResizeObserver) {
+      try { new ResizeObserver(fitCanvas).observe(document.getElementById("unity-container")); } catch (e) {}
+    }
+    // Sandboxed iframes don't always fire their own 'resize' on a parent-window
+    // resize, so the wrapper (GamePlayer.vue) also pings us. Re-fit on that.
+    window.addEventListener("message", function (e) {
+      var d = e && e.data;
+      if (d === "IA_RESIZE" || (d && d.type === "IA_RESIZE")) fitCanvas();
+    }, false);
+    fitCanvas();
+
+    /* ── Loader ─────────────────────────────────────────────────────────
+       The displayed % is CAPPED at 90 during the download, then a "preparing"
+       state takes over (spinning ring + shimmer + a slow 90→99 crawl + Bengali
+       message) while the build decompresses/instantiates. 100% is shown ONLY
+       when createUnityInstance() actually resolves — so 100% means "ready, game
+       opening", never a frozen 100%. */
+    var prepared = false;
+    var ready = false;
+    var crawl = 90;
+    var crawlTimer = null;
+
+    function setDisplay(pct) {
+      pct = Math.max(0, Math.min(100, Math.round(pct)));
+      ring.style.setProperty("--deg", (pct * 3.6) + "deg");
+      ringPct.textContent = pct + "%";
+      barFill.style.width = pct + "%";
+    }
+
+    function setPreparing() {
+      if (prepared) return;
+      prepared = true;
+      loaderCard.classList.add("preparing");
+      document.getElementById("loader-title").textContent = "প্রায় প্রস্তুত!";
+      loaderSub.textContent = "গেম শুরু হচ্ছে, একটু অপেক্ষা করো…";
+      setDisplay(crawl);
+      // Slow crawl 90→99 so it never looks frozen, but never hits 100 until ready.
+      crawlTimer = setInterval(function () {
+        if (ready) return;
+        if (crawl < 99) { crawl += 1; setDisplay(crawl); }
+      }, 350);
+    }
+
+    function updateProgress(p) {
+      if (ready) return;
+      p = Math.max(0, Math.min(1, Number(p) || 0));
+      var pct = Math.round(p * 100);
+      if (pct >= 90) {
+        setPreparing();
+      } else {
+        setDisplay(pct);
+        loaderSub.innerHTML = "লোড হচ্ছে… <b>" + pct + "%</b>";
+      }
+    }
+
+    function markReady() {
+      ready = true;
+      if (crawlTimer) { clearInterval(crawlTimer); crawlTimer = null; }
+      setDisplay(100);
+      // Keep the spinner running (leave the 'preparing' animation on) so 100%
+      // never looks frozen while the first frame paints; just update the copy.
+      var lt = document.getElementById("loader-title");
+      if (lt) lt.textContent = "প্রস্তুত! গেম খুলছে…";
+      loaderSub.textContent = "একটু অপেক্ষা করো…";
+    }
+
+    /* Fade out + remove the overlay exactly once. */
+    var loaderHidden = false;
+    function hideLoader() {
+      if (loaderHidden) return;
+      loaderHidden = true;
+      loadingBar.style.opacity = "0";
+      setTimeout(function () { loadingBar.style.display = "none"; }, 280);
+    }
+
+    /* ── First-frame gate (Issue: long black wait after 100%) ────────────
+       createUnityInstance() resolves when the Unity instance is *created*,
+       but the first scene still has to load + render — that gap was a bare
+       black screen. The Unity build emits no "ready" signal, so we keep the
+       branded 100% loader up and watch the canvas: once it shows real, varied
+       content (not a flat clear colour), we fade out. A hard cap guarantees we
+       never sit on the loader if the read is blocked (e.g. a tainted buffer);
+       any in-game message also counts as proof the game is live. */
+    function waitForFirstFrame(done) {
+      /* Reveal the game once the first frame has had a moment to paint. This is
+         TIMER-driven, not requestAnimationFrame: an occluded/backgrounded iframe
+         throttles rAF, which previously left the loader frozen at 100% forever
+         (the safety cap was only checked inside the rAF loop). A hard setTimeout
+         cap now guarantees we always reveal, bounded to ~2s. */
+      var MIN_HOLD = 700;    // let the 100% state paint before revealing
+      var HARD_CAP = 2000;   // always reveal by here (ms)
+      var nowFn = function () { return (window.performance && performance.now) ? performance.now() : (+new Date()); };
+      var start = nowFn();
+      var settled = false, poll = null;
+      function finish() {
+        if (settled) return;
+        settled = true;
+        if (poll) { clearInterval(poll); poll = null; }
+        done();
+      }
+
+      // Absolute guarantee — independent of rAF/visibility throttling.
+      setTimeout(finish, HARD_CAP);
+
+      // Any in-game message proves it's live (standalone playable). In an
+      // embedded iframe these go to the parent, so the pixel check + cap cover it.
+      window.addEventListener("message", function (e) {
+        var t = e && e.data && e.data.type;
+        if (t === "RUN_EVENT" || t === "SCORE" || t === "SESSION_APPLIED" || t === "RESTART_REQUEST") finish();
+      }, false);
+
+      // Best-effort early-out: pixel-sniff the canvas for real, varied content.
+      var sample = document.createElement("canvas");
+      sample.width = 32; sample.height = 18;
+      var sctx = null;
+      try { sctx = sample.getContext("2d", { willReadFrequently: true }); } catch (e) {}
+      var hits = 0;
+      poll = setInterval(function () {
+        if (settled) return;
+        if (!sctx) return;  // no 2d context → rely on the hard cap
+        var contentful = false;
+        try {
+          sctx.clearRect(0, 0, sample.width, sample.height);
+          sctx.drawImage(canvas, 0, 0, sample.width, sample.height);
+          var d = sctx.getImageData(0, 0, sample.width, sample.height).data;
+          var minR = 255, maxR = 0, minG = 255, maxG = 0, minB = 255, maxB = 0;
+          for (var i = 0; i < d.length; i += 4) {
+            var r = d[i], g = d[i + 1], b = d[i + 2];
+            if (r < minR) minR = r; if (r > maxR) maxR = r;
+            if (g < minG) minG = g; if (g > maxG) maxG = g;
+            if (b < minB) minB = b; if (b > maxB) maxB = b;
+          }
+          var spread = (maxR - minR) + (maxG - minG) + (maxB - minB);
+          if (spread > 60) contentful = true;
+        } catch (e) { /* tainted/blocked read → hard cap covers it */ }
+        if ((nowFn() - start) >= MIN_HOLD && contentful) { hits++; } else { hits = 0; }
+        if (hits >= 2) finish();
+      }, 100);
+    }
+
+    function unityShowBanner(msg, type) {
+      var banner = document.getElementById("unity-warning");
+      var div = document.createElement("div");
+      div.innerHTML = msg;
+      div.style.background = type === "error" ? "#ffd6d6" : (type === "warning" ? "#fff3c4" : "#fff");
+      banner.appendChild(div);
+      banner.style.display = "block";
+      if (type !== "error") {
+        setTimeout(function () {
+          if (div.parentNode === banner) banner.removeChild(div);
+          if (!banner.children.length) banner.style.display = "none";
+        }, 5000);
+      }
+    }
+
+    /* Cache-bust: ?v= from the embed/arcade wins; else GAME_VERSION.
+       Bump GAME_VERSION whenever the Build files change. */
+    var GAME_VERSION = "3";
+    var version = (new URLSearchParams(window.location.search).get("v") || "").trim() || GAME_VERSION;
+    var buildUrl  = "Build";
+    var cacheBust = "?v=" + encodeURIComponent(version);
+
+    var config = {
+      arguments: [],
+      dataUrl:        buildUrl + "/v3.data.br" + cacheBust,
+      frameworkUrl:   buildUrl + "/v3.framework.js.br" + cacheBust,
+      codeUrl:        buildUrl + "/v3.wasm.br" + cacheBust,
+      streamingAssetsUrl: "StreamingAssets",
+      companyName:    "illusionArc",
+      productName:    "GoalMaster",
+      productVersion: version,
+      showBanner:     unityShowBanner,
+      // We manage the canvas buffer ourselves (fitCanvas) for reliable
+      // sizing in the tournament iframe + on resize.
+      matchWebGLToCanvasSize: false
+    };
+
+    window.unityInstance = null;
+    updateProgress(0);
+
+    var script = document.createElement("script");
+    script.src = buildUrl + "/v3.loader.js" + cacheBust;
+
+    script.onload = function () {
+      createUnityInstance(canvas, config, updateProgress)
+        .then(function (instance) {
+          window.unityInstance = instance;
+          markReady();
+          fitCanvas();
+          // Re-fit a few times as the first scene settles (layout/DPR can shift).
+          [60, 200, 500].forEach(function (ms) { setTimeout(fitCanvas, ms); });
+          // Double-tap / double-click → fullscreen
+          canvas.addEventListener("dblclick", function () { instance.SetFullscreen(1); });
+          // Keep the branded loader over the black gap until the first scene
+          // actually renders, then fade out (never a bare black screen).
+          waitForFirstFrame(hideLoader);
+        })
+        .catch(function (msg) {
+          console.error(msg);
+          unityShowBanner("গেম চালু করা যাচ্ছে না। অনুগ্রহ করে পেজটি রিফ্রেশ করে আবার চেষ্টা করো।", "error");
+        });
+    };
+    script.onerror = function () {
+      unityShowBanner("গেম ফাইল লোড করা যাচ্ছে না। ইন্টারনেট কানেকশন চেক করে আবার চেষ্টা করো।", "error");
+    };
+    document.body.appendChild(script);
+  </script>
+</body>
+</html>
